@@ -5,9 +5,10 @@ Config.Debug = true -- Enable debug prints
 -- Gas Stations config
 Config.GasStations = {
     -- Each gas station has a unique id, coords, npc model, task zones, inventory, and cooldown state
-    ["Mirror Park"] = {
+    mirrorpark = {
         label = "Mirror Park Gas Station",
         coords = vec3(1160.85, -329.99, 68.99),
+        signPoint = vec3(1159.85, -315.39, 69.21),   -- where you clock in/out
         npc = "s_m_y_shop_mask", -- clerk ped model
         npcCoords = vec4(1164.87, -323.64, 69.21, 101.09), -- ped heading included
         taskZones = {

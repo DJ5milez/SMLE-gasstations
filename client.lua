@@ -11,6 +11,34 @@ local function DebugPrint(msg)
     end
 end
 
+-- Helper: Open NPC buying menu
+
+RegisterNetEvent('gasjob:client:OpenBuyMenu', function()
+    local station = WorkingStation or "mirrorpark"
+    local storeInventory = Config.GasStations[station].storeInventory or {}
+
+    local options = {}
+    for itemName, data in pairs(storeInventory) do
+        table.insert(options, {
+            title = data.label .. " - $" .. data.price,
+            icon = "fa-solid fa-box",
+            onSelect = function()
+                TriggerServerEvent('gasjob:server:BuyItem', itemName, station)
+            end
+        })
+    end
+
+    -- Register then show
+    lib.registerContext({
+        id = 'gas_station_buy_menu',
+        title = 'Gas Station Items',
+        options = options
+    })
+    lib.showContext('gas_station_buy_menu')
+end)
+
+
+
 -- Helper: Spawn NPC clerk for station
 local function SpawnClerk(station)
     if NPCClerkPed then
@@ -39,7 +67,8 @@ local function SpawnClerk(station)
         icon = 'fa-solid fa-cart-shopping',
         label = 'Browse Items',
         onSelect = function()
-            lib.showContext('gas_station_buy_menu')
+            -- Trigger the menu registration + display
+            TriggerEvent('gasjob:client:OpenBuyMenu')
         end,
         canInteract = function(entity, distance, coords, name)
             return true
@@ -51,31 +80,6 @@ local function SpawnClerk(station)
 end
 
 
--- Helper: Open NPC buying menu
-
-RegisterNetEvent('gasjob:client:OpenBuyMenu', function()
-    local station = WorkingStation or "central" -- fallback
-    local storeInventory = Config.GasStations[station].storeInventory
-
-    local options = {}
-    for itemName, data in pairs(storeInventory) do
-        table.insert(options, {
-            title = data.label .. " - $" .. data.price,
-            icon = "fa-solid fa-box",
-            onSelect = function()
-                TriggerServerEvent('gasjob:server:BuyItem', itemName, station)
-            end
-        })
-    end
-
-    lib.registerContext({
-        id = 'gas_station_buy_menu',
-        title = 'Gas Station Items',
-        options = options
-    })
-
-    lib.showContext('gas_station_buy_menu')
-end)
 
 -- Helper: Despawn clerk NPC
 local function DespawnClerk()
@@ -136,6 +140,38 @@ local function SignOnJob(station)
     end
 
     TriggerServerEvent("gasjob:server:SignOnJob", station)
+end
+
+for stationId, stationData in pairs(Config.GasStations) do
+    exports.ox_target:addBoxZone({
+        coords   = stationData.signPoint,
+        size     = vec3(1.5,1.5,1.5),
+        rotation = 0,
+        debug    = Config.Debug,
+        options  = {
+            {
+                name  = 'gasjob_clock_' .. stationId,
+                icon  = 'fa-solid fa-clock',
+                label = function()
+                    if WorkingStation == stationId then
+                    return 'Sign Off from ' .. stationData.label
+                else
+                    return 'Sign On to ' .. stationData.label
+                end
+            end,
+                onSelect = function()
+                    if WorkingStation == stationId then
+                        SignOffJob()
+                    else
+                        SignOnJob(stationId)
+                    end
+                end,
+                canInteract = function()
+                    return PlayerJob ~= nil and PlayerJob.name == 'store'
+                end
+            }
+        }
+    })
 end
 
 -- Handle Player Sign Off flow
