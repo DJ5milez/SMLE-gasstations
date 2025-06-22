@@ -4,6 +4,10 @@ local WorkingStation = nil
 local NPCClerkPed = nil
 local ShopperPeds = {}
 local LastPoliceAlert = 0
+local clerkSurrendered = false
+local clerkRespawnTime = 0
+local ClerkSpawnCoords = nil 
+
 
 local function DebugPrint(msg)
     if Config.Debug then
@@ -18,7 +22,7 @@ RegisterNetEvent('gasjob:client:OpenBuyMenu', function()
     local storeInventory = Config.GasStations[station].storeInventory or {}
 
     local options = {}
-    for itemName, data in pairs(storeInventory) do
+    for itemName, data in pairs(storeInventory) do 
         table.insert(options, {
             title = data.label .. " - $" .. data.price,
             icon = "fa-solid fa-box",
@@ -41,45 +45,211 @@ end)
 
 -- Helper: Spawn NPC clerk for station
 local function SpawnClerk(station)
+    WorkingStation = station
+    if GetGameTimer() < clerkRespawnTime then
+        DebugPrint("Clerk cooldown active, not respawning yet.")
+        return
+    end
+
     if NPCClerkPed then
         DeletePed(NPCClerkPed)
         NPCClerkPed = nil
     end
+
     local data = Config.GasStations[station]
     if not data then return end
 
     local model = GetHashKey(data.npc)
     RequestModel(model)
     while not HasModelLoaded(model) do Wait(100) end
+    
+    ClerkSpawnCoords = vector4(data.npcCoords.x, data.npcCoords.y, data.npcCoords.z - 1, data.npcCoords.w)
 
     local ped = CreatePed(4, model, data.npcCoords.x, data.npcCoords.y, data.npcCoords.z - 1, data.npcCoords.w, false, true)
     SetBlockingOfNonTemporaryEvents(ped, true)
     SetPedFleeAttributes(ped, 0, false)
-    SetPedCombatAttributes(ped, 17, true)
+    SetPedCombatAttributes(NPCClerkPed, 46, true) -- Always fight
+    SetPedCombatAbility(NPCClerkPed, 2) -- High ability
+    SetPedCombatRange(NPCClerkPed, 2)   -- Medium-far
+    SetPedCanSwitchWeapon(NPCClerkPed, true)
     TaskSetBlockingOfNonTemporaryEvents(ped, true)
     FreezeEntityPosition(ped, true)
-    SetEntityInvincible(ped, true)
+    SetEntityInvincible(ped, false)
 
     NPCClerkPed = ped
     exports.ox_target:addLocalEntity(NPCClerkPed, {
-    {
-        name = 'buy_items',
-        icon = 'fa-solid fa-cart-shopping',
-        label = 'Browse Items',
-        onSelect = function()
-            -- Trigger the menu registration + display
-            TriggerEvent('gasjob:client:OpenBuyMenu')
-        end,
-        canInteract = function(entity, distance, coords, name)
-            return true
-        end
-    }
-})
+        {
+            name = 'buy_items',
+            icon = 'fa-solid fa-cart-shopping',
+            label = 'Browse Items',
+            onSelect = function()
+                TriggerEvent('gasjob:client:OpenBuyMenu')
+            end,
+            canInteract = function(entity, distance, coords, name)
+                return true
+            end
+        }
+    })
 
     DebugPrint("Spawned clerk NPC for station " .. station)
 end
 
+-- Helper: Raycast to detect what player is aiming at
+local function GetEntityPlayerIsLookingAt(distance)
+    local playerPed = PlayerPedId()
+    local startPos = GetPedBoneCoords(playerPed, 31086, 0.0, 0.0, 0.0) -- Head bone
+    local forwardVector = GetEntityForwardVector(playerPed)
+    local endPos = startPos + (forwardVector * (distance or 10.0))
+    local rayHandle = StartShapeTestRay(
+        startPos.x, startPos.y, startPos.z,
+        endPos.x, endPos.y, endPos.z,
+        -1, playerPed, 0
+    )
+    local _, _, _, _, entityHit = GetShapeTestResult(rayHandle)
+    return entityHit
+end
 
+--Helper: NPC clerk attack
+
+Citizen.CreateThread(function()
+    while true do
+        Wait(500)
+
+        if not NPCClerkPed or not DoesEntityExist(NPCClerkPed) then 
+            goto continue 
+        end
+
+        DebugPrint("Clerk AI thread running. NPCClerkPed: " .. tostring(NPCClerkPed))
+
+        local playerPed = PlayerPedId()
+
+        if IsPlayerFreeAiming(PlayerId()) then
+            local aimingEntity = GetEntityPlayerIsLookingAt(10.0)
+            DebugPrint("Raycast aiming at entity: " .. tostring(aimingEntity) .. ", Clerk: " .. tostring(NPCClerkPed))
+
+            if aimingEntity == NPCClerkPed then
+                DebugPrint("Player is aiming at the clerk.")
+                if not clerkSurrendered then
+                    RequestAnimDict("random@arrests")
+                    while not HasAnimDictLoaded("random@arrests") do Wait(10) end
+
+                    TaskPlayAnim(NPCClerkPed, "random@arrests", "idle_2_hands_up", 8.0, -8.0, -1, 49, 0, false, false, false)
+                    clerkSurrendered = true
+                    DebugPrint("Clerk has surrendered.")
+                    --Optional: Play surrender sound
+                    PlayAmbientSpeech1(NPCClerkPed, "GENERIC_SHOCKED_HIGH", "SPEECH_PARAMS_FORCE")
+                end
+            elseif clerkSurrendered then
+                -- Player aiming but not at clerk (maybe lowered gun)
+                DebugPrint("Player aiming elsewhere — clerk retaliates.")
+                ClearPedTasks(NPCClerkPed)
+                FreezeEntityPosition(NPCClerkPed, false) -- Allow movement
+                GiveWeaponToPed(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, 100, false, true)
+                    Wait(50)
+                    SetCurrentPedWeapon(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, true)    
+                TaskCombatPed(NPCClerkPed, playerPed, 0, 16)
+                clerkSurrendered = false
+                -- Optional: Play retaliation sound
+                PlayAmbientSpeech1(NPCClerkPed, "GENERIC_INSULT_HIGH", "SPEECH_PARAMS_FORCE")
+                TriggerServerEvent('ps-dispatch:CustomAlert', {
+                    job = {'police'},
+                    coords = GetEntityCoords(NPCClerkPed),
+                    title = "Armed Clerk Alert",
+                    message = "A store clerk is engaging a suspect with a firearm.",
+                    flash = true,
+                    uniqueId = 'gas_clerk_retaliation_' .. math.random(1, 999999)
+})
+            end
+        else
+            -- Player not aiming at all
+            if clerkSurrendered then
+                DebugPrint("Player stopped aiming completely — clerk retaliates.")
+                ClearPedTasks(NPCClerkPed)
+                FreezeEntityPosition(NPCClerkPed, false) -- Allow movement
+                GiveWeaponToPed(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, 100, false, true)
+                    Wait(50)
+                    SetCurrentPedWeapon(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, true)    
+                TaskCombatPed(NPCClerkPed, playerPed, 0, 16)
+                clerkSurrendered = false
+                -- Optional: Play retaliation sound
+                PlayAmbientSpeech1(NPCClerkPed, "GENERIC_INSULT_HIGH", "SPEECH_PARAMS_FORCE")
+                TriggerServerEvent('ps-dispatch:CustomAlert', {
+                    job = {'police'},
+                    coords = GetEntityCoords(NPCClerkPed),
+                    title = "Armed Clerk Alert",
+                    message = "A store clerk is engaging a suspect with a firearm.",
+                    flash = true,
+                    uniqueId = 'gas_clerk_retaliation_' .. math.random(1, 999999)
+})
+            end
+        end
+
+        ::continue::
+    end
+end)
+
+
+Citizen.CreateThread(function()
+    while true do
+        Wait(1000)
+
+        if NPCClerkPed and IsEntityDead(NPCClerkPed) then
+            --clerkRespawnTime = GetGameTimer() + (30 * 60 * 1000) -- 30 minutes
+            clerkRespawnTime = GetGameTimer() + (1 * 60 * 1000) -- 1 minute
+
+            DeletePed(NPCClerkPed)
+            NPCClerkPed = nil
+            DebugPrint("Clerk killed. Respawn set for 30 minutes.")
+        end
+    end
+end)
+
+-- Helper - NPC return to work after combat
+
+Citizen.CreateThread(function()
+    while true do
+        Wait(5000)
+
+        if NPCClerkPed and not IsEntityDead(NPCClerkPed) and not clerkSurrendered then
+            if not IsPedInCombat(NPCClerkPed, 0) and ClerkSpawnCoords then
+                DebugPrint("Clerk is no longer in combat, returning to counter.")
+
+                ClearPedTasks(NPCClerkPed)
+                SetPedAsGroupMember(NPCClerkPed, 0)
+                SetPedRelationshipGroupDefaultHash(NPCClerkPed, `CIVMALE`)
+                SetPedRelationshipGroupHash(NPCClerkPed, `CIVMALE`)
+                GiveWeaponToPed(NPCClerkPed, `WEAPON_UNARMED`, 0, true, true)
+
+                TaskGoStraightToCoord(NPCClerkPed, ClerkSpawnCoords.x, ClerkSpawnCoords.y, ClerkSpawnCoords.z, 1.0, -1, ClerkSpawnCoords.w, 0.0)
+
+                -- Wait until the clerk is close to original spot
+                while #(GetEntityCoords(NPCClerkPed) - vec3(ClerkSpawnCoords.x, ClerkSpawnCoords.y, ClerkSpawnCoords.z)) > 1.5 do
+                    Wait(1000)
+                end
+
+                FreezeEntityPosition(NPCClerkPed, true)
+                SetEntityHeading(NPCClerkPed, ClerkSpawnCoords.w)
+
+                DebugPrint("Clerk returned to counter.")
+                clerkSurrendered = false
+                TaskStartScenarioInPlace(NPCClerkPed, "WORLD_HUMAN_STAND_IMPATIENT", 0, true)
+            end
+        end
+    end
+end)
+
+--Helper: check for dead NPC
+
+Citizen.CreateThread(function()
+    while true do
+        Wait(10000) -- check every 10 seconds
+
+        if not NPCClerkPed and GetGameTimer() >= clerkRespawnTime and WorkingStation then
+            DebugPrint("Clerk respawn timer elapsed. Respawning NPC...")
+            SpawnClerk(WorkingStation)
+        end
+    end
+end)
 
 -- Helper: Despawn clerk NPC
 local function DespawnClerk()
@@ -144,34 +314,36 @@ end
 
 for stationId, stationData in pairs(Config.GasStations) do
     exports.ox_target:addBoxZone({
-        coords   = stationData.signPoint,
-        size     = vec3(1.5,1.5,1.5),
-        rotation = 0,
-        debug    = Config.Debug,
-        options  = {
-            {
-                name  = 'gasjob_clock_' .. stationId,
-                icon  = 'fa-solid fa-clock',
-                label = function()
-                    if WorkingStation == stationId then
-                    return 'Sign Off from ' .. stationData.label
-                else
-                    return 'Sign On to ' .. stationData.label
-                end
+    coords   = stationData.signPoint,
+    size     = vec3(1.5, 1.5, 1.5),
+    rotation = 0,
+    debug    = Config.Debug,
+    options  = {
+        {
+            name  = 'gasjob_signon_' .. stationId,
+            icon  = 'fa-solid fa-clock',
+            label = 'Sign On to ' .. stationData.label,
+            canInteract = function()
+                return PlayerJob and PlayerJob.name == 'store' and WorkingStation == nil
             end,
-                onSelect = function()
-                    if WorkingStation == stationId then
-                        SignOffJob()
-                    else
-                        SignOnJob(stationId)
-                    end
-                end,
-                canInteract = function()
-                    return PlayerJob ~= nil and PlayerJob.name == 'store'
-                end
-            }
+            onSelect = function()
+                SignOnJob(stationId)
+            end
+        },
+        {
+            name  = 'gasjob_signoff_' .. stationId,
+            icon  = 'fa-solid fa-clock',
+            label = 'Sign Off from ' .. stationData.label,
+            canInteract = function()
+                return PlayerJob and PlayerJob.name == 'store' and WorkingStation == stationId
+            end,
+            onSelect = function()
+                SignOffJob()
+            end
         }
-    })
+    }
+})
+
 end
 
 -- Handle Player Sign Off flow
