@@ -12,6 +12,13 @@ Config.GasStations = {
         npc = "s_m_y_shop_mask", -- clerk ped model
         npcCoords = vector4(1165.55, -323.51, 69.21, 94.54), -- behind counter
         approachCoords = vector3(1164.17, -319.13, 69.21), -- in front of counter
+        registers = {
+            vec3(1165.05, -324.49, 69.2),  -- register 1
+            vec3(1164.7, -322.58, 69.2)   -- register 2 (if any)
+        },
+        safes = {
+            vec3(1159.46, -314.05, 69.2)  -- safe in backroom
+        },
         taskZones = {
             restock = vec3(1156.82, -322.75, 69.21),
             sweep = vector3(268.5, -1260.5, 29.3),

@@ -7,6 +7,7 @@ local LastPoliceAlert = 0
 local clerkSurrendered = false
 local clerkRespawnTime = 0
 local ClerkSpawnCoords = nil 
+local ClerkApproachCoords = nil
 
 
 local function DebugPrint(msg)
@@ -63,15 +64,17 @@ local function SpawnClerk(station)
     RequestModel(model)
     while not HasModelLoaded(model) do Wait(100) end
     
-    ClerkSpawnCoords = vector4(data.npcCoords.x, data.npcCoords.y, data.npcCoords.z - 1, data.npcCoords.w)
+    ClerkSpawnCoords = vector4(data.npcCoords.x, data.npcCoords.y, data.npcCoords.z, data.npcCoords.w)
+    ClerkApproachCoords = vector3(data.approachCoords.x, data.approachCoords.y, data.approachCoords.z)
+
 
     local ped = CreatePed(4, model, data.npcCoords.x, data.npcCoords.y, data.npcCoords.z - 1, data.npcCoords.w, false, true)
     SetBlockingOfNonTemporaryEvents(ped, true)
     SetPedFleeAttributes(ped, 0, false)
-    SetPedCombatAttributes(NPCClerkPed, 46, true) -- Always fight
-    SetPedCombatAbility(NPCClerkPed, 2) -- High ability
-    SetPedCombatRange(NPCClerkPed, 2)   -- Medium-far
-    SetPedCanSwitchWeapon(NPCClerkPed, true)
+    SetPedCombatAttributes(ped, 46, true) -- Always fight
+    SetPedCombatAbility(ped, 2) -- High ability
+    SetPedCombatRange(ped, 2)   -- Medium-far
+    SetPedCanSwitchWeapon(ped, true)
     TaskSetBlockingOfNonTemporaryEvents(ped, true)
     FreezeEntityPosition(ped, true)
     SetEntityInvincible(ped, false)
@@ -91,6 +94,28 @@ local function SpawnClerk(station)
         }
     })
 
+        -- Add target zones for each cash register
+    for i, regCoords in ipairs(data.registers) do
+        exports.ox_target:addBoxZone({
+            coords = regCoords,
+            size = vec3(0.45, 0.45, 0.5),
+            rotation = 0.0,
+            debug = false,
+            options = {
+                {
+                    name = 'rob_register_' .. i,
+                    label = 'Rob Cash Register',
+                    icon = 'fas fa-cash-register',
+                    onSelect = function()
+                        AttemptRegisterRobbery(station, i)
+                    end,
+                    canInteract = function(entity, distance, coords, name)
+                        return true
+                    end
+                }
+            }
+        })
+    end
     DebugPrint("Spawned clerk NPC for station " .. station)
 end
 
@@ -108,6 +133,50 @@ local function GetEntityPlayerIsLookingAt(distance)
     local _, _, _, _, entityHit = GetShapeTestResult(rayHandle)
     return entityHit
 end
+
+
+--Helper: Robbery Attempts
+
+function AttemptRegisterRobbery(station, registerIndex)
+    local playerPed = PlayerPedId()
+
+    -- Check if clerk exists and isn't being aimed at
+    if NPCClerkPed and DoesEntityExist(NPCClerkPed) and not IsPlayerFreeAiming(PlayerId()) then
+        TaskCombatPed(NPCClerkPed, playerPed, 0, 16)
+        clerkSurrendered = false
+        QBCore.Functions.Notify("The clerk noticed you!", "error")
+        return
+    end
+
+    -- Assume advanced lockpick logic (adjust to your needs)
+    local hasAdvLockpick = QBCore.Functions.GetPlayerData().items and QBCore.Functions.GetPlayerData().items['advancedlockpick']
+    local difficulty = hasAdvLockpick and 'easy' or 'medium'
+
+    QBCore.Functions.Progressbar("rob_register", "Robbing register...", 6000, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true
+    }, {}, {}, {}, function()
+        local success = exports['ps-ui']:CircleMiniGame(difficulty, 5, 15)
+        if success then
+            TriggerServerEvent("gasjob:server:RobRegister", station, registerIndex)
+            QBCore.Functions.Notify("You stole some cash!", "success")
+        else
+            QBCore.Functions.Notify("You failed to crack the register!", "error")
+        end
+    end)
+
+    TriggerServerEvent('ps-dispatch:CustomAlert', {
+        job = {'police'},
+        coords = GetEntityCoords(NPCClerkPed),
+        title = "Gas Station Robbery",
+        message = "A robbery is in progress at a gas station register.",
+        flash = true,
+        uniqueId = 'register_robbery_' .. math.random(1, 999999)
+    })
+end
+
 
 --Helper: NPC clerk attack
 
@@ -644,4 +713,12 @@ AddEventHandler('onClientResourceStop', function(resName)
     if GetCurrentResourceName() ~= resName then return end
     DespawnClerk()
     DespawnShoppers()
+end)
+
+
+-- Spawn NPC clerk when player loads or on script start
+CreateThread(function()
+    Wait(2000) -- Give time for core to load
+    local station = "mirrorpark" -- Change if dynamic
+    SpawnClerk(station)
 end)

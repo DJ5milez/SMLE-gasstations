@@ -49,6 +49,21 @@ RegisterNetEvent('gasjob:server:BuyItem', function(itemKey, stationName)
 end)
 
 
+--Helper: Server robbery attempt
+RegisterNetEvent("gasjob:server:RobRegister", function(station, registerIndex)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    local stationData = Config.GasStations[station]
+    if not stationData then return end
+
+    local reward = math.random(100, 300)
+    stationData.registerCash = math.max(0, stationData.registerCash - reward)
+    Player.Functions.AddMoney("cash", reward, "register-robbery")
+end)
+
+
 -- Helper to check if a player is working at a station
 local function IsPlayerWorking(playerId)
     for stationName, data in pairs(Stations) do
