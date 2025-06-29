@@ -57,7 +57,7 @@ Config.Payment = {
 -- Robbery config
 Config.Robbery = {
     lockpickItem = "lockpick",
-    c4Item = "c4",
+    c4Item = "thermite",
     cooldownMinutes = 60, -- 1 hour cooldown after robbery
     robberyDistance = 5.0,
     policeAlertCooldown = 300000, -- 5 minutes between manual police alerts

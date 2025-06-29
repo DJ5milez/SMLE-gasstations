@@ -8,6 +8,10 @@ local clerkSurrendered = false
 local clerkRespawnTime = 0
 local ClerkSpawnCoords = nil 
 local ClerkApproachCoords = nil
+local RegisteredRegisterZones = {}
+local clerkDeathTime = 0
+local hasThermite = false
+
 
 
 local function DebugPrint(msg)
@@ -95,29 +99,56 @@ local function SpawnClerk(station)
     })
 
         -- Add target zones for each cash register
+        if not RegisteredRegisterZones[station] then
+    RegisteredRegisterZones[station] = true
+    DebugPrint("Setting up register zones for " .. station .. ", found " .. tostring(#data.registers) .. " registers.")
     for i, regCoords in ipairs(data.registers) do
-        exports.ox_target:addBoxZone({
+        local zoneId = 'rob_register_' .. station .. '_' .. i
+        exports.ox_target:addSphereZone({
             coords = regCoords,
-            size = vec3(0.45, 0.45, 0.5),
-            rotation = 0.0,
-            debug = false,
+            radius = 0.6,
+            debug = Config.Debug,
             options = {
                 {
-                    name = 'rob_register_' .. i,
-                    label = 'Rob Cash Register',
+                    name = zoneId,
                     icon = 'fas fa-cash-register',
+                    label = 'Rob Cash Register',
                     onSelect = function()
                         AttemptRegisterRobbery(station, i)
-                    end,
-                    canInteract = function(entity, distance, coords, name)
-                        return true
                     end
                 }
             }
         })
     end
+    --  Register safe zones (correct placement)
+    if not RegisteredSafeZones then RegisteredSafeZones = {} end
+    if not RegisteredSafeZones[station] then
+        RegisteredSafeZones[station] = true
+        DebugPrint("Setting up safe zones for " .. station .. ", found " .. tostring(#data.safes or 0) .. " safes.")
+        for i, safeCoords in ipairs(data.safes or {}) do
+            exports.ox_target:addBoxZone({
+                coords = safeCoords,
+                size = vec3(0.6, 0.6, 0.6),
+                rotation = 0.0,
+                debug = Config.Debug,
+                options = {
+                    {
+                        name = 'rob_safe_' .. station .. '_' .. i,
+                        icon = 'fas fa-vault',
+                        label = 'Rob Safe',
+                        onSelect = function()
+                            AttemptSafeRobbery(station, i)
+                        end
+                    }
+                }
+            })
+        end
+    end
+
     DebugPrint("Spawned clerk NPC for station " .. station)
 end
+end
+
 
 -- Helper: Raycast to detect what player is aiming at
 local function GetEntityPlayerIsLookingAt(distance)
@@ -141,13 +172,31 @@ function AttemptRegisterRobbery(station, registerIndex)
     local playerPed = PlayerPedId()
 
     -- Check if clerk exists and isn't being aimed at
-    if NPCClerkPed and DoesEntityExist(NPCClerkPed) and not IsPlayerFreeAiming(PlayerId()) then
+    if NPCClerkPed and DoesEntityExist(NPCClerkPed) and not IsEntityDead(NPCClerkPed) and not IsPlayerFreeAiming(PlayerId()) then
+    local aimingEntity = GetEntityPlayerIsLookingAt(10.0)
+    if not IsPlayerFreeAiming(PlayerId()) or aimingEntity ~= NPCClerkPed then
+        DebugPrint("Player tried to rob register without holding up the clerk. Clerk retaliates.")
+        ClearPedTasks(NPCClerkPed)
+        FreezeEntityPosition(NPCClerkPed, false)
+        GiveWeaponToPed(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, 100, false, true)
+        Wait(50)
+        SetCurrentPedWeapon(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, true)
         TaskCombatPed(NPCClerkPed, playerPed, 0, 16)
         clerkSurrendered = false
-        QBCore.Functions.Notify("The clerk noticed you!", "error")
-        return
-    end
+        QBCore.Functions.Notify("The clerk noticed you and retaliated!", "error")
 
+        TriggerServerEvent('ps-dispatch:CustomAlert', {
+            job = {'police'},
+            coords = GetEntityCoords(NPCClerkPed),
+            title = "Clerk Retaliation",
+            message = "A store clerk has engaged a suspect during a robbery.",
+            flash = true,
+            uniqueId = 'register_retaliation_' .. math.random(1, 999999)
+        })
+
+        return -- prevent robbery attempt
+    end
+end
     -- Assume advanced lockpick logic (adjust to your needs)
     local hasAdvLockpick = QBCore.Functions.GetPlayerData().items and QBCore.Functions.GetPlayerData().items['advancedlockpick']
     local difficulty = hasAdvLockpick and 'easy' or 'medium'
@@ -175,6 +224,89 @@ function AttemptRegisterRobbery(station, registerIndex)
         flash = true,
         uniqueId = 'register_robbery_' .. math.random(1, 999999)
     })
+end
+
+function AttemptSafeRobbery(station, safeIndex)
+    local PlayerData = QBCore.Functions.GetPlayerData()
+    local hasThermite = false
+
+    for _, item in pairs(PlayerData.items or {}) do
+        if item.name == "thermite" then
+            hasThermite = true
+            break
+        end
+    end
+
+    if not hasThermite then
+        QBCore.Functions.Notify("You need thermite to rob the safe", "error")
+        return
+    end
+
+    local playerPed = PlayerPedId()
+
+    -- Check if clerk exists and isn't dead
+    if NPCClerkPed and DoesEntityExist(NPCClerkPed) and not IsEntityDead(NPCClerkPed) then
+        local aimingEntity = GetEntityPlayerIsLookingAt(10.0)
+        local isAimedAt = IsPlayerFreeAiming(PlayerId()) and aimingEntity == NPCClerkPed
+
+        if not isAimedAt then
+            DebugPrint("Player tried to rob safe without aiming at the clerk. Clerk retaliates.")
+
+            ClearPedTasks(NPCClerkPed)
+            FreezeEntityPosition(NPCClerkPed, false)
+            GiveWeaponToPed(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, 100, false, true)
+            Wait(50)
+            SetCurrentPedWeapon(NPCClerkPed, `WEAPON_PUMPSHOTGUN`, true)
+            TaskCombatPed(NPCClerkPed, playerPed, 0, 16)
+            clerkSurrendered = false
+
+            QBCore.Functions.Notify("The clerk noticed you and retaliated!", "error")
+
+            TriggerServerEvent('ps-dispatch:CustomAlert', {
+                job = {'police'},
+                coords = GetEntityCoords(NPCClerkPed),
+                title = "Clerk Retaliation",
+                message = "A store clerk has engaged a suspect during a safe robbery.",
+                flash = true,
+                uniqueId = 'safe_retaliation_' .. math.random(1, 999999)
+            })
+
+            return -- Cancel the robbery
+        end
+    end
+
+    -- Play thermite animation
+    local dict = "anim@heists@ornate_bank@thermal_charge"
+    RequestAnimDict(dict)
+    while not HasAnimDictLoaded(dict) do Wait(10) end
+
+    TaskPlayAnim(PlayerPedId(), dict, "thermal_charge", 8.0, -8.0, 2500, 49, 0, false, false, false)
+    Wait(2500)
+    ClearPedTasks(PlayerPedId())
+
+    -- Start robbery progressbar
+    QBCore.Functions.Progressbar("rob_safe", "Placing Thermite...", 7000, false, true, {
+        disableMovement = true,
+        disableCarMovement = true,
+        disableMouse = false,
+        disableCombat = true
+    }, {}, {}, {}, function()
+        TriggerServerEvent("gasjob:server:RobSafe", station, safeIndex)
+        QBCore.Functions.Notify("Safe is being robbed!", "success")
+
+        TriggerServerEvent('ps-dispatch:CustomAlert', {
+            job = {'police'},
+            coords = GetEntityCoords(PlayerPedId()),
+            title = "Gas Station Safe Robbery",
+            message = "A safe robbery is in progress!",
+            flash = true,
+            uniqueId = 'safe_robbery_' .. math.random(1, 999999)
+        })
+
+        -- Remove thermite
+        TriggerServerEvent("QBCore:Server:RemoveItem", "thermite", 1)
+        TriggerEvent("inventory:client:ItemBox", QBCore.Shared.Items["thermite"], "remove")
+    end)
 end
 
 
@@ -256,19 +388,27 @@ Citizen.CreateThread(function()
         ::continue::
     end
 end)
-
+--to add if there is player hostage do not engage
 
 Citizen.CreateThread(function()
     while true do
         Wait(1000)
 
-        if NPCClerkPed and IsEntityDead(NPCClerkPed) then
-            --clerkRespawnTime = GetGameTimer() + (30 * 60 * 1000) -- 30 minutes
-            clerkRespawnTime = GetGameTimer() + (1 * 60 * 1000) -- 1 minute
+        if NPCClerkPed then
+            if IsEntityDead(NPCClerkPed) and clerkDeathTime == 0 then
+                -- Clerk just died
+                clerkDeathTime = GetGameTimer()
+                clerkRespawnTime = clerkDeathTime + ((Config.Debug and 1 or 15) * 60 * 1000)
+                DebugPrint("Clerk killed. Corpse will remain for 15 minutes. Respawn scheduled at " .. clerkRespawnTime)
+            end
 
-            DeletePed(NPCClerkPed)
-            NPCClerkPed = nil
-            DebugPrint("Clerk killed. Respawn set for 30 minutes.")
+            if clerkDeathTime > 0 and GetGameTimer() >= clerkRespawnTime then
+                -- Time to remove corpse and allow respawn
+                DeletePed(NPCClerkPed)
+                NPCClerkPed = nil
+                clerkDeathTime = 0
+                DebugPrint("Clerk corpse removed. Ready for respawn.")
+            end
         end
     end
 end)
@@ -613,26 +753,6 @@ local function SetupStationsTargets()
             })
         end
 
-        -- Register robbery zone
-        exports.ox_target:addBoxZone({
-            coords = vector3(stationData.coords.x + 1.0, stationData.coords.y - 0.5, stationData.coords.z),
-            size = vec3(1.5, 1.5, 1.5),
-            rotation = 0,
-            debug = Config.Debug,
-            options = {
-                {
-                    name = 'gasjob_robbery_register_' .. stationId,
-                    icon = 'fa-solid fa-cash-register',
-                    label = Config.TargetOptions.registerRobbery,
-                    canInteract = function()
-                        return true
-                    end,
-                    onSelect = function()
-                        TriggerServerEvent("gasjob:server:AttemptRobbery", stationId, "register")
-                    end
-                }
-            }
-        })
 
         -- Safe robbery zone
         exports.ox_target:addBoxZone({
@@ -717,8 +837,8 @@ end)
 
 
 -- Spawn NPC clerk when player loads or on script start
-CreateThread(function()
-    Wait(2000) -- Give time for core to load
-    local station = "mirrorpark" -- Change if dynamic
-    SpawnClerk(station)
-end)
+--CreateThread(function()
+  --  Wait(2000) -- Give time for core to load
+   -- local station = "mirrorpark" -- Change if dynamic
+ ---   SpawnClerk(station)
+--end)

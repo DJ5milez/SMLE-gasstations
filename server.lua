@@ -4,6 +4,7 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 local Stations = {} -- Tracks current working players and station states
 local Cooldowns = {} -- Tracks robbery cooldowns per station
+local stationData = Stations[station]
 
 -- Utility for debug printing
 local function DebugPrint(...)
@@ -63,6 +64,22 @@ RegisterNetEvent("gasjob:server:RobRegister", function(station, registerIndex)
     Player.Functions.AddMoney("cash", reward, "register-robbery")
 end)
 
+RegisterNetEvent("gasjob:server:RobSafe", function(station, safeIndex)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then return end
+
+    local stationData = Config.GasStations[station]
+    if not stationData then return end
+
+    local amount = math.random(500, 1500)
+    Player.Functions.AddMoney('cash', amount, "safe-robbery")
+    TriggerClientEvent('ox_lib:notify', src, { type = 'success', description = "You stole $" .. amount .. " from the safe" })
+
+    -- Optional: Remove C4 or start cooldown
+    Player.Functions.RemoveItem("c4", 1)
+    TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items["c4"], "remove")
+end)
 
 -- Helper to check if a player is working at a station
 local function IsPlayerWorking(playerId)
